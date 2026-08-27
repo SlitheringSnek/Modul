@@ -1,0 +1,1 @@
+{"currentOperation":{"data":{"machineID":"module2","uniqueOpID":104,"assemblyParent":"train","part":"trainCabin","color":"red","queuePosition":4,"scheduledOpStart":"null","scheduledOpEnd":"null","AGVstartPos":"null","AGVendPos":"null","AGV":"null"},"metrics":{"status":"Processing","realOpStart":"unknownRealStart","realOpEnd":"unknownRealEnd","startTs":1787746400439}}}

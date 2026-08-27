@@ -1,0 +1,29 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# --- macOS ---
+.DS_Store
+
+# --- Secrets / local env ---
+.env
+
+# --- Stray full pip-freeze copied from the Pi's system Python, not this
+#     project's actual dependency list (see YOLO/requirements.txt for that) ---
+/requirements.txt
+
+# --- YOLO: runtime-generated data, not source ---
+YOLO/captured_images/
+YOLO/detection_results/
+YOLO/calibration_images/
+YOLO/output.log
+YOLO/updated_movement_data_test.json.txt
+
+# --- MVS: vendor SDK installer binaries (Hikvision), not source; download
+#     separately per YOLO/README.txt / camera_capture.py rather than tracking
+#     ~120MB of .deb/.tar.gz in git ---
+MVS/*.deb
+MVS/*.tar.gz
