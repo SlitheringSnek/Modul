@@ -13,6 +13,8 @@ dist/
 
 # --- Secrets / local env ---
 .env
+.roboflow_env
+**/.roboflow_env
 
 # --- YOLO: runtime-generated data, not source ---
 YOLO/captured_images/

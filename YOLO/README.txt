@@ -68,7 +68,15 @@ YOLO model tece lokalno v main.py procesu prek Roboflow `inference` paketa - ni 
 api_key se NE hardcoda vec v main.py (repo je javen) - nastavis ga kot environment variable preden
  zazenes kodo:
 export ROBOFLOW_API_KEY="tvoj_api_key_tukaj"
- ali pa to dodaj v ~/.bashrc da ti ni treba vsakic na novo nastavljat.
+
+ce zganjas kodo rocno prek SSH terminala je to dovolj (lahko das export tudi v ~/.bashrc za
+ interaktivne seje). CE PA main.py/run_save_img.sh sprozis prek Node-RED (exec node) ali
+ kaksnega drugega NE-interaktivnega nacina, export v ~/.bashrc NE BO delal - default Raspberry
+ Pi OS ~/.bashrc ima na vrhu "case $- in *i*) ;; *) return;; esac", kar pomeni da se za
+ ne-interaktivne lupine (exec node jih taksne zaganja) ustavi TAKOJ in nikoli ne pride do
+ export vrstice na koncu fila, cetudi jo tja dodas. run_save_img.sh zato namesto tega sourca
+ ~/.roboflow_env (ki NI del tega git repozitorija) - naredi ga enkrat na vsakem Pi-ju z:
+echo 'export ROBOFLOW_API_KEY="tvoj_api_key_tukaj"' > ~/.roboflow_env
 
 ce nisi se skalibriral robota glede na kamero - torej koordinate kamere se cez transformacijsko matriko preslikajo
  koordinate robota, potem daj:

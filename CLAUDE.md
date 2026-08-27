@@ -136,3 +136,9 @@ from the MVS SDK install — this only works once the MVS SDK is installed at th
 - `main.py`'s `DEFAULT_CONFIG` reads the Roboflow API key from the `ROBOFLOW_API_KEY` environment
   variable (never hardcode it back into `DEFAULT_CONFIG` — this repo is public). `model_id` is not
   secret and stays hardcoded.
+- `ROBOFLOW_API_KEY` must be loadable from a **non-interactive** shell, since `run_save_img.sh` is
+  invoked by Node-RED's `exec` node, not a login shell. `~/.bashrc` doesn't work for this on stock
+  Raspberry Pi OS (its default `~/.bashrc` returns immediately for non-interactive shells, before ever
+  reaching an `export` appended at the bottom of the file) — `run_save_img.sh` instead sources
+  `~/.roboflow_env` explicitly, a per-Pi file outside this repo (`echo 'export ROBOFLOW_API_KEY="..."' >
+  ~/.roboflow_env`). Don't "simplify" this back to relying on `~/.bashrc`.
