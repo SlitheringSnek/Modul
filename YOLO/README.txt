@@ -39,6 +39,15 @@ pyenv local train-detector-venv
 
 installirej kr rabs:
 pip install -r requirements.txt
+# to je minimalen seznam samo za YOLO/. za HITER setup novega Pi-ja z vsem (vkljucno z
+# robot/interface deps) uporabi raje requirements.txt iz roota repozitorija:
+# cd .. && pip install -r requirements.txt
+# POZOR: ta root requirements.txt je cel pip freeze s pravega delujoceg Pi-ja (vkljucno
+# s par sistemskimi paketi kot so dbus-python, PyGObject, pycairo, python-apt, picamera2,
+# ki so na navadnem Raspberry Pi OS ze nainstalirani prek apt in NISO nujno cisti pip
+# paketi - ce kaksen od teh faila pri buildu na cisto novem Pi-ju, ga lahko preprosto
+# izbrises iz seznama, ker ga ta projekt dejansko ne rabi (edini paketi k jih koda
+# dejansko uporablja so: numpy, opencv-python, pydobot, pydobotplus, pyserial, inference)
 
 zazeni kodo:
 python main.py

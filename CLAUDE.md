@@ -39,11 +39,18 @@ pipeline or calibration flow. Rough shape:
 # one-time: pyenv + a Python 3.10 venv (see YOLO/README.txt for full pyenv bootstrap)
 pyenv virtualenv 3.10 train-detector-venv
 pyenv activate train-detector-venv
-pip install -r YOLO/requirements.txt   # includes `inference`, the Roboflow local-inference SDK
-pip install pydobot pydobotplus        # Dobot drivers, not pinned in requirements.txt
+pip install -r YOLO/requirements.txt   # minimal set: numpy, opencv-python, pydobot, pydobotplus,
+                                        # pyserial, inference (the Roboflow local-inference SDK)
 
 python YOLO/main.py                    # capture + detect (locally, in-process) + update movement_data
 ```
+
+There's a second, much larger `requirements.txt` at the repo root — a full `pip freeze` of a known-working
+Raspberry Pi's system Python, kept so a fresh Pi can be provisioned in one shot
+(`pip install -r requirements.txt` from the repo root) without hunting down individual deps. It includes
+several OS-tied packages (`dbus-python`, `PyGObject`, `pycairo`, `python-apt`, `picamera2`, ...) that ship
+via `apt` on stock Raspberry Pi OS and may fail to build via pip on a different/newer image — if so, drop
+those specific lines; the actual imports this project needs are just the six listed above.
 
 First run of `main.py`/`main_calibration.py` needs internet + a valid `api_key` in `DEFAULT_CONFIG` to
 download and cache the Roboflow-trained model weights (via `get_model()` in `component_detector.py`);
