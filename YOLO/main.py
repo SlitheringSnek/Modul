@@ -70,7 +70,7 @@ DEFAULT_CONFIG = {
 
     # Robot Calibration & Movement Settings
     "HOMOGRAPHY_MATRIX_PATH": "/home/pi/Desktop/YOLO/camera_robot_homography.npy", # Path to saved homography matrix ABSOLUTE PATH
-    "DOBOT_FIRMWARE_CALIBRATION_SCRIPT_PATH": os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dobot_calibrate_5G.py"),
+    "DOBOT_FIRMWARE_CALIBRATION_SCRIPT_PATH": "/home/pi/Desktop/FW_DOBOT/modularAssembly/dobot_calibrate_5G.py",
 
     # Dobot Home Position (should align with calibrate_robot.py)
     "DOBOT_HOME_X": 260.0,
