@@ -142,3 +142,9 @@ from the MVS SDK install — this only works once the MVS SDK is installed at th
   reaching an `export` appended at the bottom of the file) — `run_save_img.sh` instead sources
   `~/.roboflow_env` explicitly, a per-Pi file outside this repo (`echo 'export ROBOFLOW_API_KEY="..."' >
   ~/.roboflow_env`). Don't "simplify" this back to relying on `~/.bashrc`.
+- MVS SDK installs (every Pi set up so far) put `libMvCameraControl.so` under `/opt/MVS/lib/aarch64/`,
+  but `MvCameraControl_class.py` hardcodes looking for it at `/opt/MVS/aarch64/libMvCameraControl.so` —
+  needs `sudo ln -s /opt/MVS/lib/aarch64 /opt/MVS/aarch64` once per Pi after installing the `.deb`, or
+  `camera_capture.py`'s import fails with `OSError: ... cannot open shared object file`. See
+  `MVS/README.md`. Unlike the API key, this is a filesystem symlink so it isn't sensitive to
+  interactive vs. non-interactive shells.
