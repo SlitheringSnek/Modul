@@ -101,7 +101,10 @@ def _work_thread_internal(cam, output_dir, capture_done_event):
                 is_bayer_format = (stOutFrame.stFrameInfo.enPixelType & 0xFF000000) == 0x01000000
 
                 if is_bayer_format:
-                    print("Detected Bayer pixel type. Attempting conversion to RGB8_Packed...")
+                    expected_len_8bit = stOutFrame.stFrameInfo.nWidth * stOutFrame.stFrameInfo.nHeight
+                    print(f"Detected Bayer pixel type. nFrameLen={stOutFrame.stFrameInfo.nFrameLen}, "
+                          f"width*height={expected_len_8bit} (diff={stOutFrame.stFrameInfo.nFrameLen - expected_len_8bit}). "
+                          f"Attempting conversion to RGB8_Packed...")
                     stConvertParam = MV_CC_PIXEL_CONVERT_PARAM()
                     memset(byref(stConvertParam), 0, sizeof(stConvertParam))
 
