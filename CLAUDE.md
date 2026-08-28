@@ -46,11 +46,11 @@ python YOLO/main.py                    # capture + detect (locally, in-process) 
 ```
 
 There's a second, much larger `requirements.txt` at the repo root — a full `pip freeze` of a known-working
-Raspberry Pi's system Python, kept so a fresh Pi can be provisioned in one shot
-(`pip install -r requirements.txt` from the repo root) without hunting down individual deps. It includes
-several OS-tied packages (`dbus-python`, `PyGObject`, `pycairo`, `python-apt`, `picamera2`, ...) that ship
-via `apt` on stock Raspberry Pi OS and may fail to build via pip on a different/newer image — if so, drop
-those specific lines; the actual imports this project needs are just the six listed above.
+Raspberry Pi's system Python, kept only for reference/exact-parity cases. **Don't use it for normal
+setup on a new Pi** — in practice it reliably fails partway through on OS-tied packages that need apt dev
+headers to build from source (`dbus-python` needs `libdbus-1-dev`, `PyGObject` needs `libgirepository`,
+etc.), wasting real time for no benefit, since the project doesn't import any of them. `YOLO/requirements.txt`
+(the six packages above) is the one to actually install on every Pi.
 
 First run of `main.py`/`main_calibration.py` needs internet + a valid `api_key` in `DEFAULT_CONFIG` to
 download and cache the Roboflow-trained model weights (via `get_model()` in `component_detector.py`);

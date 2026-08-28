@@ -37,17 +37,17 @@ pyenv activate train-detector-venv
 #ali:
 pyenv local train-detector-venv
 
-installirej kr rabs:
+installirej kr rabs (na NOVEM Pi-ju vedno zacni s TEM - hitro, brez buildanja iz vira):
 pip install -r requirements.txt
-# to je minimalen seznam samo za YOLO/. za HITER setup novega Pi-ja z vsem (vkljucno z
-# robot/interface deps) uporabi raje requirements.txt iz roota repozitorija:
-# cd .. && pip install -r requirements.txt
-# POZOR: ta root requirements.txt je cel pip freeze s pravega delujoceg Pi-ja (vkljucno
-# s par sistemskimi paketi kot so dbus-python, PyGObject, pycairo, python-apt, picamera2,
-# ki so na navadnem Raspberry Pi OS ze nainstalirani prek apt in NISO nujno cisti pip
-# paketi - ce kaksen od teh faila pri buildu na cisto novem Pi-ju, ga lahko preprosto
-# izbrises iz seznama, ker ga ta projekt dejansko ne rabi (edini paketi k jih koda
-# dejansko uporablja so: numpy, opencv-python, pydobot, pydobotplus, pyserial, inference)
+# to je edini requirements.txt ki ga dejansko rabis - vsebuje TOCNO tiste pakete ki jih
+# koda uporablja: numpy, opencv-python, pydobot, pydobotplus, pyserial, inference
+
+# NE uporabljaj requirements.txt iz roota repozitorija za normalen setup! Tisti file je
+# cel pip freeze s pravega delujoceg Pi-ja, vkljucno s kupom sistemskih paketov (dbus-python,
+# PyGObject, pycairo, python-apt, picamera2, ...) ki na cisto novem Pi-ju NE bodo pip
+# installirali brez apt dev headerjev in bodo samo izgubljali cas / failali buildi
+# (npr. dbus-python rabi libdbus-1-dev). Uporabi ga SAMO ce specificno rabis eksaktno
+# kopijo celega sistemskega okolja za neki drug razlog - za samo running te kode ga NE rabis.
 
 zazeni kodo:
 python main.py
