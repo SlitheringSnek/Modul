@@ -78,24 +78,28 @@ ThingsBoard (doesn't need to be on one of the 4 Pis — a central server, or eve
 ThingsBoard runs on, is simplest).
 
 **Prerequisite**: install a Postgres client node for Node-RED once, in that instance's user
-directory (typically `~/.node-red`):
+directory (**must be `~/.node-red`** — installing anywhere else means Node-RED never sees it):
 
 ```bash
 cd ~/.node-red
-npm install node-red-contrib-postgres
+npm install node-red-contrib-postgresql
 ```
-(Check its exact node/config field names once installed — Node-RED Postgres packages vary
-slightly by version; the flow below assumes a node that accepts a parameterized SQL query with
-`$1`, `$2`, ... placeholders and takes `msg.payload` as the parameter array, which is the common
-convention, but confirm against whatever version actually installs.)
+This is the actively-maintained package that ended up working (installing via Node-RED's own
+"Manage palette → Install" search UI is more reliable than the raw `npm install` CLI - a plain
+CLI install can silently leave a broken `MODULE_NOT_FOUND` state; the in-editor installer handles
+this correctly). Its node type is `postgresql`, and **parameter values go in `msg.params`**, not
+`msg.payload` (`msg.payload` is reserved for the query *result*) — see its built-in help panel in
+the editor (info/book icon) for the full docs.
 
-**Flow shape**: `http in` → `function` (normalize) → two `postgres` nodes (counts, status) →
+**Flow shape**: `http in` → `function` (normalize) → two `postgresql` nodes (counts, status) →
 `http response`
 
 - **`http in`**: Method `POST`, URL `/digital-twin/ingest`. Wire its output to the function node
   below.
 
-- **`function` node** ("Normalize payload"), 2 outputs — paste this in:
+- **`function` node** ("Normalize payload"), 2 outputs — the code goes in the **"On Message" tab**
+  specifically (not "On Start", which runs once at startup with no incoming `msg`; not "Setup",
+  which is config only — set **Outputs = 2** there):
 
   ```javascript
   // Input: { moduleId: "module1", components_count: { "trainEngine": {"red": 1}, ... } }
@@ -111,36 +115,43 @@ convention, but confirm against whatever version actually installs.)
       }
   }
 
-  // Output 2: a single upsert for module_status, marking this module as freshly seen.
-  const statusMsg = { payload: [moduleId, 'online'] };
+  // Row messages: no msg.res needed here - there can be zero, one, or many rows per
+  // incoming request, and an HTTP response can only be sent once.
+  const rowMsgs = rows.map(r => ({ params: r }));
 
-  // node-red-contrib-postgres (and similar) typically run one query per incoming msg, not
-  // per array element - so split output 1 into one msg per row.
-  const rowMsgs = rows.map(r => ({ payload: r }));
+  // Status message: exactly one per incoming request, so THIS is the one that carries the
+  // rest of the original msg (msg.res / msg._msgid, needed by the http response node at the
+  // end of the flow - a plain { params: [...] } object drops them, causing Node-RED's
+  // http response node to error with "No response object").
+  const statusMsg = { ...msg, params: [moduleId, 'online'] };
 
   return [rowMsgs, statusMsg];
   ```
 
   Wire output 1 (an array of messages — Node-RED's `function` node auto-splits an array-of-msgs
-  output into separate sends) into the counts `postgres` node, and output 2 into the status
-  `postgres` node.
+  output into separate sends) into the counts `postgresql` node, and output 2 into the status
+  `postgresql` node.
 
-- **`postgres` node (counts)** — query:
+- **`postgresql` node (counts)** — Server: `localhost:5432/digital_twin` (configured with the
+  `digital_twin_bridge` role from step 1, not the `postgres` superuser) — query:
   ```sql
   INSERT INTO component_counts (module_id, part_type, color, count)
   VALUES ($1, $2, $3, $4)
   ```
+  Doesn't need to be wired to anything after this — it's a dead end.
 
-- **`postgres` node (status)** — query:
+- **`postgresql` node (status)** — same Server config — query:
   ```sql
   INSERT INTO module_status (module_id, status, last_seen_at)
   VALUES ($1, $2, now())
   ON CONFLICT (module_id) DO UPDATE SET status = EXCLUDED.status, last_seen_at = now()
   ```
 
-- **`http response`** node: wire from both `postgres` nodes (or just one, if you want the HTTP
-  response to only wait on the counts insert) back to an `http response` node so ThingsBoard's
-  REST API Call node gets a clean `200 OK` instead of timing out waiting for a reply.
+- **`http response`** node: wire from **only** the status `postgresql` node into it (not the
+  counts node - since there can be zero/one/many count rows per request but only ever one status
+  message, only the status branch is guaranteed to fire exactly once, which is what an HTTP
+  response requires). This gives ThingsBoard's REST API Call node a clean `200 OK` once the
+  status upsert completes, instead of timing out waiting for a reply.
 
 ## 4. Test end-to-end, one module first
 
@@ -164,3 +175,105 @@ assembly-order lifecycle events from `order_data`), that means: (1) publishing t
 data to ThingsBoard from the modules too, (2) adding matching tables here, and (3) extending the
 rule chain script + bridge flow to carry it through. Worth doing once you know exactly what the
 simulation needs to query — no need to guess ahead of that.
+
+
+
+
+
+
+sudo nano /etc/resolv.conf 
+
+cd ~/.node-red
+npm install node-red-contrib-postgres
+sudo systemctl restart nodered
+
+sudo systemctl restart nodered
+
+sudo systemctl status nodered
+curl -I http://localhost:1880
+
+psql --version
+
+sudo apt update && sudo apt install -y postgresql
+  sudo systemctl enable --now postgresql
+
+sudo -u postgres createdb digital_twin
+
+cd 
+cd /tmp
+cp /home/pi/Desktop/digital_twin/schema.sql /tmp
+
+sudo -u postgres psql -d digital_twin -f ~/Desktop/Modul/digital_twin/schema.sql
+
+sudo -u postgres psql -d digital_twin -c "
+INSERT INTO modules (module_id, name) VALUES
+    ('module1', 'Module 1'),
+    ('module2', 'Module 2'),
+    ('module3', 'Module 3'),
+    ('module4', 'Module 4');
+"
+
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM modules;"
+
+sudo -u postgres psql -d digital_twin -c "
+CREATE ROLE digital_twin_bridge WITH LOGIN PASSWORD 'CHANGE_ME_TO_SOMETHING_REAL';
+GRANT CONNECT ON DATABASE digital_twin TO digital_twin_bridge;
+GRANT USAGE ON SCHEMA public TO digital_twin_bridge;
+GRANT SELECT, INSERT, UPDATE ON component_counts, module_status, modules TO digital_twin_bridge;
+GRANT USAGE, SELECT ON SEQUENCE component_counts_id_seq TO digital_twin_bridge;
+"
+
+
+
+Once that's run, let's build the actual flow in the Node-RED editor (http://<this-pi-ip>:1880):
+
+New flow tab — click the + next to the existing tabs, name it something like "Digital Twin Bridge".
+
+Drag in an http in node. Double-click it: Method = POST, URL = /digital-twin/ingest.
+
+Drag in a function node, wire it from the http in node. Double-click it, set Outputs to 2 (under the Setup tab), and paste this into the function body:
+
+const moduleId = msg.payload.moduleId;
+const counts = msg.payload.components_count || {};
+
+const rows = [];
+for (const partType of Object.keys(counts)) {
+    for (const color of Object.keys(counts[partType])) {
+        rows.push([moduleId, partType, color, counts[partType][color]]);
+    }
+}
+
+const statusMsg = { params: [moduleId, 'online'] };
+const rowMsgs = rows.map(r => ({ params: r }));
+
+return [rowMsgs, statusMsg];
+
+
+Check the hamburger menu (top-right, three lines) -> 'Manage palette' -> 'Nodes' tab,
+   search for 'postgres' there. This shows ALL installed nodes including ones hidden from
+   the main palette view - if http-in is listed there but greyed out / toggled off,
+   someone previously hid that category from the palette.
+
+if it doenst work remove it and then install page and install: node-red-contrib-postgresql
+
+Drag in two postgres nodes (search "postgres" in the palette). Wire the function node's output 1 into the first, output 2 into the second.
+
+On the first postgres node's config (create new config node — click the pencil or + icon): 
+Host localhost, 
+Port 5432, 
+Database digital_twin, 
+User digital_twin_bridge, 
+Password (what you just set), -> CHANGE_ME_TO_SOMETHING_REAL 
+SSL false. 
+This config node can be reused for the second postgres node too — no need to create it twice.
+
+First postgres node's query: 
+INSERT INTO component_counts (module_id, part_type, color, count) VALUES ($1, $2, $3, $4)
+
+Second postgres node's query: 
+INSERT INTO module_status (module_id, status, last_seen_at) VALUES ($1, $2, now()) ON CONFLICT (module_id) DO UPDATE SET status = EXCLUDED.status, last_seen_at = now()
+
+Drag in an http response node, wire both postgres nodes into it.
+
+Click Deploy (top right).
+
