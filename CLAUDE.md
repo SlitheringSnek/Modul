@@ -23,6 +23,10 @@ There are three top-level areas:
   conveyor belt through a hand-rolled `lib/` protocol implementation.
 - **`MVS/`** — the Hikvision Machine Vision Studio SDK installer (`.deb` / `.tar.gz`), a binary dependency
   installed system-wide (typically at `/opt/MVS`), not source code to edit.
+- **`digital_twin/`** — not part of any single module; a central Postgres schema + setup guide for merging
+  telemetry from all 4 physical modules (fed via a ThingsBoard Rule Chain → Node-RED bridge, not code that
+  runs on the Pis) so an external plant-simulation/digital-twin program can query one consistent data
+  source instead of reading each module or ThingsBoard's internal tables directly. See its own README.
 
 There is no build system, package manifest, or test suite — this is a collection of scripts meant to be
 run directly on the target Raspberry Pi hardware with real (or simulated) Dobot/camera hardware attached.
