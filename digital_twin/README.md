@@ -77,15 +77,25 @@ existing dashboard/attribute storage, it just taps a copy of the same data):
        'NodeRed #4': 'module4'
    };
 
+   var mappedId = deviceModuleMap[metadata.deviceName];
+   var moduleId = (mappedId != null) ? mappedId : metadata.deviceName;
+
    return {
        msg: {
-           moduleId: deviceModuleMap[metadata.deviceName] || metadata.deviceName,
+           moduleId: moduleId,
            components_count: msg.components_count
        },
        metadata: metadata,
        msgType: msgType
    };
    ```
+
+   **Important**: ThingsBoard's Script node doesn't run plain JavaScript — it runs **TBEL**
+   (ThingsBoard Expression Language, built on Java's MVEL2), which looks JS-like but differs in
+   places. In particular, `||` here isn't JS's truthy-fallback operator - it tries to cast both
+   operands to actual `Boolean` and throws `ClassCastException: String cannot be cast to Boolean`
+   if given a String (e.g. the common `foo || bar` "default value" idiom fails). Use an explicit
+   `!= null` ternary instead, as above, not `||`, for anything that isn't already a boolean.
 
    Wire the filter node's "True" output → this Script node.
 
