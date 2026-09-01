@@ -42,23 +42,28 @@ INSERT INTO modules (module_id, name) VALUES
 
 This runs in the ThingsBoard UI (Rule Chains), not in this repo. In this project's actual
 ThingsBoard instance, every device (the 4 module devices, plus unrelated ones like the AGV) shares
-one Root Rule Chain and all telemetry passes through the same "Save Timeseries" node - so this is
-a **one-time change**, not something repeated per module. Two things are important precisely
-because of that sharing:
+one Root Rule Chain - so this is a **one-time change**, not something repeated per module. Three
+things are important, discovered by checking a real device's actual data rather than assuming:
 
+- **`components_count` is sent as a Shared Attribute update ("Post attributes"), not telemetry
+  ("Post telemetry")** - confirmed by checking a real device's "Shared attributes" tab (had a fresh
+  `components_count` value) versus its "Latest telemetry" tab (completely empty). This means the
+  filter/script/REST-call chain below must hang off the **"Save Shared Attributes"** node, *not*
+  "Save Timeseries" as originally assumed - wiring it after Save Timeseries silently never fires,
+  with no error anywhere, since that branch never carries this data at all.
 - **Device names aren't `module1`..`module4`** - the actual ThingsBoard device names are
   `NodeRed #1`..`NodeRed #4`. The Script node below maps them explicitly; update the mapping if
   your device names differ or change.
-- **Other devices' telemetry passes through the same "Save Timeseries" node** (`Zalogovnik_Dobot`,
-  `AGV`, etc.), which doesn't have `components_count` at all - a **filter** before the Script node
-  keeps those from being forwarded (and failing) at all.
+- **Other devices' shared-attribute updates pass through the same "Save Shared Attributes" node**
+  (`Zalogovnik_Dobot`, `AGV`, etc.), which don't have `components_count` at all - a **filter**
+  before the Script node keeps those from being forwarded (and failing) at all.
 
-After the existing "Save Timeseries" node (leave it in place — this doesn't replace your existing
-dashboard/telemetry storage, it just taps a copy of the same data):
+After the existing "Save Shared Attributes" node (leave it in place — this doesn't replace your
+existing dashboard/attribute storage, it just taps a copy of the same data):
 
 1. Add a **Check fields presence** filter node, configured to check that `components_count` is
-   present. Wire "Save Timeseries" → this node (label the link "Success"). Leave the filter's
-   "False" output unwired — that's the dead end for non-module telemetry.
+   present. Wire "Save Shared Attributes" → this node (label the link "Success"). Leave the
+   filter's "False" output unwired — that's the dead end for non-module attribute updates.
 
 2. Add a **Script** *transformation* node (not the Script *filter* node — different category,
    same name) with this logic, so the outgoing payload always carries which module it came from,
