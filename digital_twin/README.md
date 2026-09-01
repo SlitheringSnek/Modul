@@ -40,19 +40,41 @@ INSERT INTO modules (module_id, name) VALUES
 
 ## 2. ThingsBoard Rule Chain: forward telemetry to the bridge
 
-This runs in the ThingsBoard UI (Rule Chains), not in this repo. For each device (or a shared
-rule chain all 4 module devices route through):
+This runs in the ThingsBoard UI (Rule Chains), not in this repo. In this project's actual
+ThingsBoard instance, every device (the 4 module devices, plus unrelated ones like the AGV) shares
+one Root Rule Chain and all telemetry passes through the same "Save Timeseries" node - so this is
+a **one-time change**, not something repeated per module. Two things are important precisely
+because of that sharing:
 
-1. After the existing "Save Timeseries" node (leave it in place — this doesn't replace your
-   existing dashboard/telemetry storage, it just taps a copy of the same data), add a
-   **Script** transformation node (Filter/Enrichment → Script) with this logic, so the outgoing
-   payload always carries which module it came from, in the exact shape the bridge expects:
+- **Device names aren't `module1`..`module4`** - the actual ThingsBoard device names are
+  `NodeRed #1`..`NodeRed #4`. The Script node below maps them explicitly; update the mapping if
+  your device names differ or change.
+- **Other devices' telemetry passes through the same "Save Timeseries" node** (`Zalogovnik_Dobot`,
+  `AGV`, etc.), which doesn't have `components_count` at all - a **filter** before the Script node
+  keeps those from being forwarded (and failing) at all.
+
+After the existing "Save Timeseries" node (leave it in place — this doesn't replace your existing
+dashboard/telemetry storage, it just taps a copy of the same data):
+
+1. Add a **Check fields presence** filter node, configured to check that `components_count` is
+   present. Wire "Save Timeseries" → this node (label the link "Success"). Leave the filter's
+   "False" output unwired — that's the dead end for non-module telemetry.
+
+2. Add a **Script** *transformation* node (not the Script *filter* node — different category,
+   same name) with this logic, so the outgoing payload always carries which module it came from,
+   mapped to the real device names:
 
    ```javascript
-   // ThingsBoard rule chain transformation script
+   var deviceModuleMap = {
+       'NodeRed #1': 'module1',
+       'NodeRed #2': 'module2',
+       'NodeRed #3': 'module3',
+       'NodeRed #4': 'module4'
+   };
+
    return {
        msg: {
-           moduleId: metadata.deviceName,      // or hardcode per-device if deviceName doesn't match module_id
+           moduleId: deviceModuleMap[metadata.deviceName] || metadata.deviceName,
            components_count: msg.components_count
        },
        metadata: metadata,
@@ -60,13 +82,15 @@ rule chain all 4 module devices route through):
    };
    ```
 
-   Adjust `metadata.deviceName` if your ThingsBoard device names don't already match the
-   `module_id` values you inserted in step 1 (e.g. add a device attribute for `moduleId` instead
-   and reference that).
+   Wire the filter node's "True" output → this Script node.
 
-2. Wire that Script node's output into a **REST API Call** node, configured with:
+3. Add a **REST API Call** node, configured with:
    - **Endpoint URL**: `http://<node-red-host>:1880/digital-twin/ingest`
    - **Request method**: `POST`
+
+   Wire the Script node's output → this REST API Call node.
+
+4. Save/apply the rule chain.
 
 That's the whole ThingsBoard-side change — everything else in your existing rule chain (device
 provisioning, alarms, dashboards, whatever else you have) stays untouched.
@@ -277,3 +301,15 @@ Drag in an http response node, wire both postgres nodes into it.
 
 Click Deploy (top right).
 
+test:
+curl -i -X POST http://localhost:1880/digital-twin/ingest \ \
+  -H "Content-Type: application/json" \
+  -d '{"moduleId": "module1", "components_count": {"trainEngine": {"red": 1}, "trainCabin": {"blue": 2}}}'
+
+
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM component_counts ORDER BY recorded_at DESC LIMIT 10;";"
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM module_status;"
+
+
+clean the table:
+sudo -u postgres psql -d digital_twin -c "TRUNCATE component_counts;"
