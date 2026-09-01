@@ -328,3 +328,7 @@ sudo -u postgres psql -d digital_twin -c "SELECT * FROM module_status;"
 
 clean the table:
 sudo -u postgres psql -d digital_twin -c "TRUNCATE component_counts;"
+
+check ce dela:
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM module_status;"
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM component_counts ORDER BY recorded_at DESC LIMIT 5;"
