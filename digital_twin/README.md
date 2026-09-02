@@ -1,158 +1,334 @@
-# Connecting Siemens Tecnomatix Plant Simulation to `digital_twin`
+# digital_twin
 
-## Status as of 2026-09-01
+Central Postgres database that merges telemetry from all 4 assembly modules, for the plant
+simulation / digital twin program to read directly via its DB connector (ODBC/JDBC).
 
-The full pipeline below is **built and confirmed working with live production data**:
+Every module keeps doing exactly what it already does — capturing, detecting, and publishing
+telemetry to ThingsBoard. Nothing on the Pis changes. This adds exactly one new thing: a bridge
+that copies each module's telemetry, as it arrives in ThingsBoard, into a clean, purpose-built
+schema the simulation tool can query — instead of the simulation tool reading ThingsBoard's own
+internal `ts_kv`/`ts_kv_latest` tables directly, which are a generic key-value time-series store
+not meant for external consumption, and can change shape across ThingsBoard version upgrades.
 
 ```
-[Module 1..4] --MQTT--> [ThingsBoard] --Rule Chain--> [Node-RED bridge] --> [Postgres: digital_twin]
+[Module 1..4] --MQTT--> [ThingsBoard] --Rule Chain (REST API Call)--> [Node-RED bridge] --> [Postgres]
+                                                                                                  ^
+                                                                                                  |
+                                                                                    [Simulation program, via ODBC/JDBC]
 ```
 
-Every module already publishes `components_count` as a ThingsBoard Shared Attribute on every
-detection run. A Rule Chain (filter → TBEL script → REST API Call) forwards it to a Node-RED
-bridge flow, which writes it into a central `digital_twin` Postgres database. Confirmed end-to-end
-with `NodeRed #1` / `module1` — real rows landing in `component_counts` and `module_status`
-matching the live ThingsBoard dashboard.
+## 1. Set up the database
 
-**This document covers only what's left**: getting Plant Simulation to read that database. See
-[`README.md`](README.md) and [`schema.sql`](schema.sql) in this same folder for the full backstory
-and schema if you need it — you likely won't need to touch either of those again.
-
-## What you're connecting to
-
-- **Database**: `digital_twin`, PostgreSQL, running on the Pi/server that hosts the Node-RED
-  bridge (find its IP by running `hostname -I` on that machine — call this `<bridge-host-ip>`
-  below).
-- **Port**: `5432` (Postgres default, not changed).
-- **Tables** (see `schema.sql` for full definitions):
-  - `modules (module_id, name, description)` — one row per physical module (`module1`..`module4`).
-  - `component_counts (id, module_id, part_type, color, count, recorded_at)` — one row per
-    (module, part_type, color) observation from a detection run. This is a time series: every run
-    inserts new rows, it doesn't overwrite. Use `recorded_at` to get the latest state (query below).
-  - `module_status (module_id, status, last_seen_at)` — one row per module, upserted each run, for
-    "is this module currently online."
-  - `module_positions (rig_id, module_name, center_x_cm, center_y_cm, angle, updated_at)` — one row
-    per module currently visible to the camera rig, upserted each detection run (not a time series
-    like `component_counts` — always the latest known position). Added 2026-09-02, confirmed working
-    end-to-end into Postgres; not yet wired into Plant Simulation.
-
-## Step 1: Open Postgres to the network (if Plant Simulation runs on a different machine)
-
-Skip this if Plant Simulation somehow runs on the same machine as the database — it won't.
-Run on the Postgres host (`<bridge-host-ip>`):
+Create a Postgres database (can be on the same server as ThingsBoard, as its own separate
+database — don't put this inside ThingsBoard's own database):
 
 ```bash
-# Find the actual config file paths first:
-sudo -u postgres psql -c "SHOW config_file;"
-sudo -u postgres psql -c "SHOW hba_file;"
-
-# Edit the config file SHOW config_file printed, find/set:
-#   listen_addresses = '*'
-
-# Edit the file SHOW hba_file printed, add this line:
-#   host    digital_twin    all    192.168.9.0/24    scram-sha-256
-# (adjust 192.168.9.0/24 to match your actual local subnet if different)
-
-sudo systemctl restart postgresql
-
-# If a firewall is active, allow the port:
-sudo ufw status                  # check if ufw is even active first
-sudo ufw allow 5432/tcp          # only if the above showed "active"
+createdb digital_twin
+psql -d digital_twin -f schema.sql
 ```
 
-## Step 2: Create a read-only role for Plant Simulation
+Then insert the 4 real modules once (adjust `module_id` to match the `machineID` values already
+used in `FW_DOBOT/modularAssembly/order_data`, e.g. `module1`..`module4`):
 
-Don't reuse the bridge's write role. Run on the Postgres host:
+```sql
+INSERT INTO modules (module_id, name) VALUES
+    ('module1', 'Module 1'),
+    ('module2', 'Module 2'),
+    ('module3', 'Module 3'),
+    ('module4', 'Module 4');
+```
+
+## 2. ThingsBoard Rule Chain: forward telemetry to the bridge
+
+This runs in the ThingsBoard UI (Rule Chains), not in this repo. In this project's actual
+ThingsBoard instance, every device (the 4 module devices, plus unrelated ones like the AGV) shares
+one Root Rule Chain - so this is a **one-time change**, not something repeated per module. Three
+things are important, discovered by checking a real device's actual data rather than assuming:
+
+- **`components_count` is sent as a Shared Attribute update ("Post attributes"), not telemetry
+  ("Post telemetry")** - confirmed by checking a real device's "Shared attributes" tab (had a fresh
+  `components_count` value) versus its "Latest telemetry" tab (completely empty). This means the
+  filter/script/REST-call chain below must hang off the **"Save Shared Attributes"** node, *not*
+  "Save Timeseries" as originally assumed - wiring it after Save Timeseries silently never fires,
+  with no error anywhere, since that branch never carries this data at all.
+- **Device names aren't `module1`..`module4`** - the actual ThingsBoard device names are
+  `NodeRed #1`..`NodeRed #4`. The Script node below maps them explicitly; update the mapping if
+  your device names differ or change.
+- **Other devices' shared-attribute updates pass through the same "Save Shared Attributes" node**
+  (`Zalogovnik_Dobot`, `AGV`, etc.), which don't have `components_count` at all - a **filter**
+  before the Script node keeps those from being forwarded (and failing) at all.
+
+After the existing "Save Shared Attributes" node (leave it in place — this doesn't replace your
+existing dashboard/attribute storage, it just taps a copy of the same data):
+
+1. Add a **Check fields presence** filter node, configured to check that `components_count` is
+   present. Wire "Save Shared Attributes" → this node (label the link "Success"). Leave the
+   filter's "False" output unwired — that's the dead end for non-module attribute updates.
+
+2. Add a **Script** *transformation* node (not the Script *filter* node — different category,
+   same name) with this logic, so the outgoing payload always carries which module it came from,
+   mapped to the real device names:
+
+   ```javascript
+   var deviceModuleMap = {
+       'NodeRed #1': 'module1',
+       'NodeRed #2': 'module2',
+       'NodeRed #3': 'module3',
+       'NodeRed #4': 'module4'
+   };
+
+   var mappedId = deviceModuleMap[metadata.deviceName];
+   var moduleId = (mappedId != null) ? mappedId : metadata.deviceName;
+
+   return {
+       msg: {
+           moduleId: moduleId,
+           components_count: msg.components_count
+       },
+       metadata: metadata,
+       msgType: msgType
+   };
+   ```
+
+   **Important**: ThingsBoard's Script node doesn't run plain JavaScript — it runs **TBEL**
+   (ThingsBoard Expression Language, built on Java's MVEL2), which looks JS-like but differs in
+   places. In particular, `||` here isn't JS's truthy-fallback operator - it tries to cast both
+   operands to actual `Boolean` and throws `ClassCastException: String cannot be cast to Boolean`
+   if given a String (e.g. the common `foo || bar` "default value" idiom fails). Use an explicit
+   `!= null` ternary instead, as above, not `||`, for anything that isn't already a boolean.
+
+   Wire the filter node's "True" output → this Script node.
+
+3. Add a **REST API Call** node, configured with:
+   - **Endpoint URL**: `http://<node-red-host>:1880/digital-twin/ingest`
+   - **Request method**: `POST`
+
+   Wire the Script node's output → this REST API Call node.
+
+4. Save/apply the rule chain.
+
+That's the whole ThingsBoard-side change — everything else in your existing rule chain (device
+provisioning, alarms, dashboards, whatever else you have) stays untouched.
+
+## 3. Node-RED bridge flow
+
+Build this as a **new flow tab**, on whichever Node-RED instance is convenient to reach from
+ThingsBoard (doesn't need to be on one of the 4 Pis — a central server, or even the same host
+ThingsBoard runs on, is simplest).
+
+**Prerequisite**: install a Postgres client node for Node-RED once, in that instance's user
+directory (**must be `~/.node-red`** — installing anywhere else means Node-RED never sees it):
 
 ```bash
+cd ~/.node-red
+npm install node-red-contrib-postgresql
+```
+This is the actively-maintained package that ended up working (installing via Node-RED's own
+"Manage palette → Install" search UI is more reliable than the raw `npm install` CLI - a plain
+CLI install can silently leave a broken `MODULE_NOT_FOUND` state; the in-editor installer handles
+this correctly). Its node type is `postgresql`, and **parameter values go in `msg.params`**, not
+`msg.payload` (`msg.payload` is reserved for the query *result*) — see its built-in help panel in
+the editor (info/book icon) for the full docs.
+
+**Flow shape**: `http in` → `function` (normalize) → two `postgresql` nodes (counts, status) →
+`http response`
+
+- **`http in`**: Method `POST`, URL `/digital-twin/ingest`. Wire its output to the function node
+  below.
+
+- **`function` node** ("Normalize payload"), 2 outputs — the code goes in the **"On Message" tab**
+  specifically (not "On Start", which runs once at startup with no incoming `msg`; not "Setup",
+  which is config only — set **Outputs = 2** there):
+
+  ```javascript
+  // Input: { moduleId: "module1", components_count: { "trainEngine": {"red": 1}, ... } }
+  const moduleId = msg.payload.moduleId;
+  const counts = msg.payload.components_count || {};
+
+  // Output 1: one row per (part_type, color) for the component_counts INSERT.
+  // Each row is [module_id, part_type, color, count] matching the query's $1..$4.
+  const rows = [];
+  for (const partType of Object.keys(counts)) {
+      for (const color of Object.keys(counts[partType])) {
+          rows.push([moduleId, partType, color, counts[partType][color]]);
+      }
+  }
+
+  // Row messages: no msg.res needed here - there can be zero, one, or many rows per
+  // incoming request, and an HTTP response can only be sent once.
+  const rowMsgs = rows.map(r => ({ params: r }));
+
+  // Status message: exactly one per incoming request, so THIS is the one that carries the
+  // rest of the original msg (msg.res / msg._msgid, needed by the http response node at the
+  // end of the flow - a plain { params: [...] } object drops them, causing Node-RED's
+  // http response node to error with "No response object").
+  const statusMsg = { ...msg, params: [moduleId, 'online'] };
+
+  return [rowMsgs, statusMsg];
+  ```
+
+  Wire output 1 (an array of messages — Node-RED's `function` node auto-splits an array-of-msgs
+  output into separate sends) into the counts `postgresql` node, and output 2 into the status
+  `postgresql` node.
+
+- **`postgresql` node (counts)** — Server: `localhost:5432/digital_twin` (configured with the
+  `digital_twin_bridge` role from step 1, not the `postgres` superuser) — query:
+  ```sql
+  INSERT INTO component_counts (module_id, part_type, color, count)
+  VALUES ($1, $2, $3, $4)
+  ```
+  Doesn't need to be wired to anything after this — it's a dead end.
+
+- **`postgresql` node (status)** — same Server config — query:
+  ```sql
+  INSERT INTO module_status (module_id, status, last_seen_at)
+  VALUES ($1, $2, now())
+  ON CONFLICT (module_id) DO UPDATE SET status = EXCLUDED.status, last_seen_at = now()
+  ```
+
+- **`http response`** node: wire from **only** the status `postgresql` node into it (not the
+  counts node - since there can be zero/one/many count rows per request but only ever one status
+  message, only the status branch is guaranteed to fire exactly once, which is what an HTTP
+  response requires). This gives ThingsBoard's REST API Call node a clean `200 OK` once the
+  status upsert completes, instead of timing out waiting for a reply.
+
+## 4. Test end-to-end, one module first
+
+Before rolling this out to all 4 devices' rule chains, point just one module's rule chain at the
+bridge, trigger a detection run from that module as usual, and confirm a row actually lands:
+
+```sql
+SELECT * FROM component_counts ORDER BY recorded_at DESC LIMIT 10;
+SELECT * FROM module_status;
+```
+
+Once that's confirmed working, repeat the ThingsBoard Rule Chain change (step 2) for the
+remaining 3 devices.
+
+## Extending beyond aggregate counts
+
+This first version only carries what every module already sends today — aggregate part/color
+counts per detection run (`generate_component_counts()` in `YOLO/main.py`). If the simulation
+needs richer per-detection data (pixel/robot coordinates, orientation, confidence, individual
+assembly-order lifecycle events from `order_data`), that means: (1) publishing that additional
+data to ThingsBoard from the modules too, (2) adding matching tables here, and (3) extending the
+rule chain script + bridge flow to carry it through. Worth doing once you know exactly what the
+simulation needs to query — no need to guess ahead of that.
+
+
+
+
+
+
+sudo nano /etc/resolv.conf 
+
+cd ~/.node-red
+npm install node-red-contrib-postgres
+sudo systemctl restart nodered
+
+sudo systemctl restart nodered
+
+sudo systemctl status nodered
+curl -I http://localhost:1880
+
+psql --version
+
+sudo apt update && sudo apt install -y postgresql
+  sudo systemctl enable --now postgresql
+
+sudo -u postgres createdb digital_twin
+
+cd 
+cd /tmp
+cp /home/pi/Desktop/digital_twin/schema.sql /tmp
+
+sudo -u postgres psql -d digital_twin -f ~/Desktop/Modul/digital_twin/schema.sql
+
 sudo -u postgres psql -d digital_twin -c "
-CREATE ROLE digital_twin_reader WITH LOGIN PASSWORD 'REPLACE_WITH_A_REAL_PASSWORD';
-GRANT CONNECT ON DATABASE digital_twin TO digital_twin_reader;
-GRANT USAGE ON SCHEMA public TO digital_twin_reader;
-GRANT SELECT ON component_counts, module_status, modules, module_positions TO digital_twin_reader;
+INSERT INTO modules (module_id, name) VALUES
+    ('module1', 'Module 1'),
+    ('module2', 'Module 2'),
+    ('module3', 'Module 3'),
+    ('module4', 'Module 4');
 "
-```
 
-**Replace the password before running**, and share the real value with whoever configures the
-ODBC connection through a separate channel (Slack/in person) — don't put it in a doc or commit.
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM modules;"
 
-If `digital_twin_reader` already exists from before `module_positions` existed, the `CREATE ROLE`
-above will just error harmlessly ("role already exists") — run this instead to add the missing grant
-without recreating anything:
-```bash
-sudo -u postgres psql -d digital_twin -c "GRANT SELECT ON module_positions TO digital_twin_reader;"
-```
+sudo -u postgres psql -d digital_twin -c "
+CREATE ROLE digital_twin_bridge WITH LOGIN PASSWORD 'CHANGE_ME_TO_SOMETHING_REAL';
+GRANT CONNECT ON DATABASE digital_twin TO digital_twin_bridge;
+GRANT USAGE ON SCHEMA public TO digital_twin_bridge;
+GRANT SELECT, INSERT, UPDATE ON component_counts, module_status, modules TO digital_twin_bridge;
+GRANT USAGE, SELECT ON SEQUENCE component_counts_id_seq TO digital_twin_bridge;
+"
 
-## Step 3: Install the PostgreSQL ODBC driver (on the Windows machine running Plant Simulation)
 
-Download **psqlODBC** from postgresql.org (64-bit build, matching your Windows install) and run
-the installer. No configuration needed at this step — just gets the driver registered with Windows.
 
-## Step 4: Create an ODBC Data Source (DSN)
+Once that's run, let's build the actual flow in the Node-RED editor (http://<this-pi-ip>:1880):
 
-On the same Windows machine:
+New flow tab — click the + next to the existing tabs, name it something like "Digital Twin Bridge".
 
-1. Start menu → search **"ODBC Data Sources (64-bit)"** → open it.
-2. **Add** → select the **PostgreSQL Unicode(x64)** driver (installed in step 3).
-3. Fill in:
-   - **Data Source**: any name you like, e.g. `digital_twin` (this is what Plant Simulation will
-     reference)
-   - **Server**: `<bridge-host-ip>`
-   - **Port**: `5432`
-   - **Database**: `digital_twin`
-   - **User Name**: `digital_twin_reader`
-   - **Password**: the real password from Step 2
-4. Click **Test** before saving — confirm it actually connects. If it fails here, it's a network/
-   credentials problem to solve before touching Plant Simulation at all (check Steps 1–2 again).
+Drag in an http in node. Double-click it: Method = POST, URL = /digital-twin/ingest.
 
-## Step 5: Reading the data in Plant Simulation
+Drag in a function node, wire it from the http in node. Double-click it, set Outputs to 2 (under the Setup tab), and paste this into the function body:
 
-Plant Simulation has a built-in **ODBC** interface object (class library, under the communication/
-interface section) that you drag into your model frame, point at the DSN created above, and query
-via SimTalk — results typically populate a **Table File** object your model logic then reads.
+const moduleId = msg.payload.moduleId;
+const counts = msg.payload.components_count || {};
 
-**I can't give exact menu paths or SimTalk method names with certainty here** — they've shifted
-across Plant Simulation versions and I have no way to verify against whichever version you're
-running. This is exactly the kind of thing to hand to Codex directly: point it at your actual
-Plant Simulation installation, give it the query below, and have it work out the exact SimTalk
-syntax against your real environment (the same way we iteratively debugged the ThingsBoard/Node-RED
-side against the real running system, rather than guessing blind).
+const rows = [];
+for (const partType of Object.keys(counts)) {
+    for (const color of Object.keys(counts[partType])) {
+        rows.push([moduleId, partType, color, counts[partType][color]]);
+    }
+}
 
-**A good starting query** — latest count per (module, part_type, color), i.e. current stock per
-module:
+const statusMsg = { params: [moduleId, 'online'] };
+const rowMsgs = rows.map(r => ({ params: r }));
 
-```sql
-SELECT DISTINCT ON (module_id, part_type, color)
-    module_id, part_type, color, count, recorded_at
-FROM component_counts
-ORDER BY module_id, part_type, color, recorded_at DESC;
-```
+return [rowMsgs, statusMsg];
 
-**Module online/offline status**:
 
-```sql
-SELECT module_id, status, last_seen_at FROM module_status;
-```
+Check the hamburger menu (top-right, three lines) -> 'Manage palette' -> 'Nodes' tab,
+   search for 'postgres' there. This shows ALL installed nodes including ones hidden from
+   the main palette view - if http-in is listed there but greyed out / toggled off,
+   someone previously hid that category from the palette.
 
-**Current module positions from the camera rig** — already the latest per module (upserted, not a
-time series), so no `DISTINCT ON`/ordering needed:
+if it doenst work remove it and then install page and install: node-red-contrib-postgresql
 
-```sql
-SELECT rig_id, module_name, center_x_cm, center_y_cm, angle, updated_at FROM module_positions;
-```
+Drag in two postgres nodes (search "postgres" in the palette). Wire the function node's output 1 into the first, output 2 into the second.
 
-## What to hand Codex
+On the first postgres node's config (create new config node — click the pencil or + icon): 
+Host localhost, 
+Port 5432, 
+Database digital_twin, 
+User digital_twin_bridge, 
+Password (what you just set), -> CHANGE_ME_TO_SOMETHING_REAL 
+SSL false. 
+This config node can be reused for the second postgres node too — no need to create it twice.
 
-A concrete prompt to get it started with the actual specifics it needs, rather than starting from
-nothing:
+First postgres node's query: 
+INSERT INTO component_counts (module_id, part_type, color, count) VALUES ($1, $2, $3, $4)
 
-> I'm working in Siemens Tecnomatix Plant Simulation [your version here]. I need to connect to a
-> PostgreSQL database via an existing ODBC DSN named `digital_twin`, run this query:
-> `SELECT DISTINCT ON (module_id, part_type, color) module_id, part_type, color, count, recorded_at
-> FROM component_counts ORDER BY module_id, part_type, color, recorded_at DESC;`, and populate a
-> Table File object with the results so the rest of my simulation model can read current
-> per-module component stock from it. Show me the exact class library object to use, the SimTalk
-> method code, and how to trigger it (on a timer / manually / on model start).
+Second postgres node's query: 
+INSERT INTO module_status (module_id, status, last_seen_at) VALUES ($1, $2, now()) ON CONFLICT (module_id) DO UPDATE SET status = EXCLUDED.status, last_seen_at = now()
 
-Give it access to Plant Simulation's own Help (F1 on the ODBC class, if it can read that) for
-version-exact API details — that's more reliable than anything pre-written here.
+Drag in an http response node, wire both postgres nodes into it.
+
+Click Deploy (top right).
+
+test:
+curl -i -X POST http://localhost:1880/digital-twin/ingest \ \
+  -H "Content-Type: application/json" \
+  -d '{"moduleId": "module1", "components_count": {"trainEngine": {"red": 1}, "trainCabin": {"blue": 2}}}'
+
+
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM component_counts ORDER BY recorded_at DESC LIMIT 10;";"
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM module_status;"
+
+
+clean the table:
+sudo -u postgres psql -d digital_twin -c "TRUNCATE component_counts;"
+
+check ce dela:
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM module_status;"
+sudo -u postgres psql -d digital_twin -c "SELECT * FROM component_counts ORDER BY module_id, recorded_at DESC;"
